@@ -66,14 +66,8 @@ def clean_header_whitespace(col: str) -> str:
 def safe_to_str(value):
     """Coerce a mixed-type cell (str/int/float) to a single consistent string type.
 
-    Route No and Service mix str/int/float within the same column, in the same
-    file (CLAUDE.md §3.2) — e.g. Route No has '14M' (str) and 504 (int) side by
-    side. PySpark's Arrow-based pandas->Spark conversion cannot represent a mixed
-    dtype column at all and throws "Exception thrown when converting pandas
-    Series ... to Arrow Array", so both columns must be a single dtype before
-    spark.createDataFrame() — this is a technical requirement, not a business
-    rename. Whole-number floats (e.g. 504.0) are rendered as '504', not '504.0',
-    so a route logged as an int in one row and a float in another still lands on
+    Whole-number floats (e.g. 504.0) are rendered as '504', not '504.0', so a
+    route logged as an int in one row and a float in another still lands on
     the same string.
     """
     if pd.isna(value):
@@ -82,11 +76,33 @@ def safe_to_str(value):
         return str(int(value))
     return str(value)
 
-# Columns known to mix str/int/float within a single file — must be stringified
-# before Spark conversion. Found by profiling every column's Python types across
-# all 8 files; re-run scratchpad/check_mixed_types.py-style checks on any new
-# source file before assuming this list is complete.
-MIXED_TYPE_COLUMNS = ["Route No", "Service"]
+# Columns that are unsafe to let Spark/Arrow auto-infer a dtype for, in two
+# distinct ways found by profiling every column's Python types across all 8
+# files (re-run scratchpad/check_mixed_types.py- and check_all_categorical.py-
+# style checks on any new source file before assuming this list is complete):
+#
+#   1. Mixed str/int/float WITHIN one file: Route No, Service
+#      (e.g. Route No has '14M' (str) and 504 (int) side by side)
+#   2. Consistent type WITHIN each file, but the type DIFFERS ACROSS files —
+#      e.g. Inter state route is 100% null in MTC (pandas/Arrow infers
+#      NullType/DoubleType there) but genuine strings ('TN', 'KA'...) in every
+#      other file; Peak hour service holds decimal-hour floats in SALEM
+#      (9.55, 12.0) but text ('NO', '12hrs') elsewhere. unionByName then tries
+#      to widen to a common type and throws
+#      [CAST_INVALID_INPUT] "The value 'NO' ... cannot be cast to DOUBLE".
+#      Social Oblicatory Route hits the same all-null-in-one-file trap (SETC).
+#
+# Either failure mode is a PySpark/Arrow type-inference limitation, not a
+# business rule — so every column below is force-cast to pandas' nullable
+# StringDtype (not just Python str) so Arrow always infers STRING for it, in
+# every file, even when a given file's column is 100% null.
+FORCE_STRING_COLUMNS = [
+    "Route No",
+    "Service",
+    "Social Oblicatory Route (Yes / No)",
+    "Peak hour service (4+ 4 = 8hrs) / 12hrs / NA",
+    "Inter state route (AP / KA / KL / PY / TN)",
+]
 
 ingestion_ts = datetime.now(timezone.utc)
 pandas_frames = []
@@ -95,9 +111,9 @@ for filename, corporation in SOURCE_FILES.items():
     file_path = f"{volume_path}/{filename}"
     pdf = pd.read_excel(file_path, sheet_name="Sheet1")
     pdf.columns = [clean_header_whitespace(c) for c in pdf.columns]
-    for col in MIXED_TYPE_COLUMNS:
+    for col in FORCE_STRING_COLUMNS:
         if col in pdf.columns:
-            pdf[col] = pdf[col].map(safe_to_str)
+            pdf[col] = pdf[col].map(safe_to_str).astype("string")
     pdf["_source_file"] = filename
     pdf["_corporation_raw"] = corporation
     pdf["_ingestion_ts"] = ingestion_ts
