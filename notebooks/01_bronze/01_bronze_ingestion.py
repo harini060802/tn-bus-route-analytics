@@ -56,12 +56,37 @@ from datetime import datetime, timezone
 def clean_header_whitespace(col: str) -> str:
     """Collapse embedded newlines/repeated spaces in a source header to single spaces.
 
-    This is the one normalization applied at Bronze, purely because Delta/Parquet
+    This is one of two normalizations applied at Bronze, purely because Delta/Parquet
     column names can't contain newline characters. Typos, casing, and wording are
     preserved verbatim (e.g. 'Esstablishment Cost' stays as-is) — real renaming to
     canonical names happens in Silver.
     """
     return re.sub(r"\s+", " ", str(col)).strip()
+
+def safe_to_str(value):
+    """Coerce a mixed-type cell (str/int/float) to a single consistent string type.
+
+    Route No and Service mix str/int/float within the same column, in the same
+    file (CLAUDE.md §3.2) — e.g. Route No has '14M' (str) and 504 (int) side by
+    side. PySpark's Arrow-based pandas->Spark conversion cannot represent a mixed
+    dtype column at all and throws "Exception thrown when converting pandas
+    Series ... to Arrow Array", so both columns must be a single dtype before
+    spark.createDataFrame() — this is a technical requirement, not a business
+    rename. Whole-number floats (e.g. 504.0) are rendered as '504', not '504.0',
+    so a route logged as an int in one row and a float in another still lands on
+    the same string.
+    """
+    if pd.isna(value):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+# Columns known to mix str/int/float within a single file — must be stringified
+# before Spark conversion. Found by profiling every column's Python types across
+# all 8 files; re-run scratchpad/check_mixed_types.py-style checks on any new
+# source file before assuming this list is complete.
+MIXED_TYPE_COLUMNS = ["Route No", "Service"]
 
 ingestion_ts = datetime.now(timezone.utc)
 pandas_frames = []
@@ -70,6 +95,9 @@ for filename, corporation in SOURCE_FILES.items():
     file_path = f"{volume_path}/{filename}"
     pdf = pd.read_excel(file_path, sheet_name="Sheet1")
     pdf.columns = [clean_header_whitespace(c) for c in pdf.columns]
+    for col in MIXED_TYPE_COLUMNS:
+        if col in pdf.columns:
+            pdf[col] = pdf[col].map(safe_to_str)
     pdf["_source_file"] = filename
     pdf["_corporation_raw"] = corporation
     pdf["_ingestion_ts"] = ingestion_ts
