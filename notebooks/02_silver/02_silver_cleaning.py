@@ -235,17 +235,20 @@ silver_df = silver_df.withColumn("route_length_km", F.abs(F.col("route_length_km
 # MAGIC %md
 # MAGIC ## `is_placeholder_route` flag
 # MAGIC TIRUNELVELI has 87 rows where `Route No`, `Service`, `origin`, and `destination`
-# MAGIC are all literally `'ADDL'`/`'ADDITIONAL'` — not real routes. Flagged (not
-# MAGIC dropped) so Gold-layer route analysis can exclude/segregate them as needed.
+# MAGIC are all placeholder text — `'ADDL'` in some columns, `'ADDITIONAL'` in others
+# MAGIC (not necessarily the same word in every column of a given row) — not real
+# MAGIC routes. Flagged (not dropped) so Gold-layer route analysis can exclude/segregate
+# MAGIC them as needed.
 
 # COMMAND ----------
 
+PLACEHOLDER_VALUES = ["ADDL", "ADDITIONAL"]
 silver_df = silver_df.withColumn(
     "is_placeholder_route",
-    (F.upper(F.trim(F.col("route_no"))) == "ADDL")
-    & (F.upper(F.trim(F.col("service"))) == "ADDL")
-    & (F.upper(F.trim(F.col("origin"))) == "ADDL")
-    & (F.upper(F.trim(F.col("destination"))) == "ADDL"),
+    F.upper(F.trim(F.col("route_no"))).isin(PLACEHOLDER_VALUES)
+    & F.upper(F.trim(F.col("service"))).isin(PLACEHOLDER_VALUES)
+    & F.upper(F.trim(F.col("origin"))).isin(PLACEHOLDER_VALUES)
+    & F.upper(F.trim(F.col("destination"))).isin(PLACEHOLDER_VALUES),
 )
 
 # COMMAND ----------
