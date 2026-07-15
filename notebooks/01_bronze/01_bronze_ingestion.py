@@ -53,15 +53,24 @@ import pandas as pd
 import re
 from datetime import datetime, timezone
 
-def clean_header_whitespace(col: str) -> str:
-    """Collapse embedded newlines/repeated spaces in a source header to single spaces.
+DELTA_INVALID_CHARS = re.compile(r"[ ,;{}()\n\t=]")
 
-    This is one of two normalizations applied at Bronze, purely because Delta/Parquet
-    column names can't contain newline characters. Typos, casing, and wording are
-    preserved verbatim (e.g. 'Esstablishment Cost' stays as-is) — real renaming to
-    canonical names happens in Silver.
+def sanitize_delta_column_name(col: str) -> str:
+    """Make a source header safe as a Delta column name, without renaming to canonical names.
+
+    Delta rejects column names containing any of ' ,;{}()\n\t=' (raises
+    DELTA_INVALID_CHARACTERS_IN_COLUMN_NAMES) unless column mapping is enabled — and
+    almost every source header here has at least a space (e.g. even 'Route No' is
+    invalid as-is). Each forbidden character is replaced with '_', runs of '_' are
+    collapsed, and leading/trailing '_' are stripped. This is a storage-compatibility
+    fix only — typos, casing, and wording are preserved verbatim (e.g. 'Esstablishment
+    Cost' stays as-is, just with the space swapped for '_'); real renaming to canonical
+    §3.1 names happens in Silver.
     """
-    return re.sub(r"\s+", " ", str(col)).strip()
+    collapsed = re.sub(r"\s+", " ", str(col)).strip()
+    sanitized = DELTA_INVALID_CHARS.sub("_", collapsed)
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+    return sanitized
 
 def safe_to_str(value):
     """Coerce a mixed-type cell (str/int/float) to a single consistent string type.
@@ -96,12 +105,18 @@ def safe_to_str(value):
 # business rule — so every column below is force-cast to pandas' nullable
 # StringDtype (not just Python str) so Arrow always infers STRING for it, in
 # every file, even when a given file's column is 100% null.
+# Written as the raw source headers and sanitized the same way the columns themselves
+# are (rather than hand-transcribed) so this list can't drift out of sync with the
+# actual post-sanitization column names.
 FORCE_STRING_COLUMNS = [
-    "Route No",
-    "Service",
-    "Social Oblicatory Route (Yes / No)",
-    "Peak hour service (4+ 4 = 8hrs) / 12hrs / NA",
-    "Inter state route (AP / KA / KL / PY / TN)",
+    sanitize_delta_column_name(c)
+    for c in [
+        "Route No",
+        "Service",
+        "Social Oblicatory Route (Yes / No)",
+        "Peak hour service (4+ 4 = 8hrs) / 12hrs / NA",
+        "Inter state route (AP / KA / KL / PY / TN)",
+    ]
 ]
 
 ingestion_ts = datetime.now(timezone.utc)
@@ -110,7 +125,7 @@ pandas_frames = []
 for filename, corporation in SOURCE_FILES.items():
     file_path = f"{volume_path}/{filename}"
     pdf = pd.read_excel(file_path, sheet_name="Sheet1")
-    pdf.columns = [clean_header_whitespace(c) for c in pdf.columns]
+    pdf.columns = [sanitize_delta_column_name(c) for c in pdf.columns]
     for col in FORCE_STRING_COLUMNS:
         if col in pdf.columns:
             pdf[col] = pdf[col].map(safe_to_str).astype("string")
