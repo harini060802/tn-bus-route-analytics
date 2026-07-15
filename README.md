@@ -17,8 +17,10 @@ powerbi/        — Power BI dashboard file(s)
 
 1. Scope note — done
 2. GitHub repo structure — done
-3. Bronze ingestion notebook(s)
-4. Silver cleaning layer notebook(s)
-5. Gold aggregation layer notebook(s)
+3. Bronze ingestion notebook(s) — done
+4. Silver cleaning layer notebook(s) — done
+5. Gold aggregation layer notebook(s) — done
 6. Power BI connection via Databricks SQL Warehouse
 7. Dashboard page design
+
+See `PROGRESS.md` for a working log of what's done, key decisions, and where to pick up next.
