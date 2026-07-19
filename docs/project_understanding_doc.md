@@ -229,9 +229,9 @@ Before any summarizing happens, the 87 placeholder rows flagged in Silver (Secti
 4.6) are excluded — since they're not real routes, including them would inflate or
 misattribute totals like revenue and kilometres.
 
-### 5.1 Two different kinds of numbers, summarized two different ways
+### 5.1 Different kinds of numbers, summarized different ways
 Not every column can be combined the same way. The notebook explicitly separates
-columns into three groups:
+columns into groups:
 
 1. **Plain totals (summed).** Things like total revenue, total expenditure, total
    kilometres operated, total passengers, and each of the five "reason not
@@ -263,6 +263,21 @@ columns into three groups:
    number to average. When multiple individual services on the same route are
    combined, the summary marks the route as "yes" if even one of its underlying
    services was marked yes.
+
+4. **A total split into an estimated breakdown (allocated proportionally).** The
+   source data only reports one **total** "revenue lost due to KM loss" figure per
+   row — it doesn't say how much of that loss is attributable to crew shortage
+   versus breakdown versus spares versus accident versus other reasons. To support
+   a reason-by-reason breakdown on the dashboard, Gold **allocates** that total
+   proportionally, based on each reason's share of the kilometres lost (e.g., if
+   "breakdown" caused 30% of the lost kilometres for a route, 30% of that route's
+   revenue loss is attributed to breakdown). This produces five new columns —
+   `revenue_loss_want_of_crew`, `revenue_loss_breakdown`,
+   `revenue_loss_want_of_spares`, `revenue_loss_accident`, `revenue_loss_others` —
+   and a validation check confirms the five always add back up to the original
+   total. **This is an estimate, not a figure the corporations directly
+   reported** — it's a reasonable, transparent way to split a number that was only
+   ever given in total.
 
 ### 5.2 `gold.route_performance` — one row per route
 Grouped by corporation + route number (all the individual scheduled services on a

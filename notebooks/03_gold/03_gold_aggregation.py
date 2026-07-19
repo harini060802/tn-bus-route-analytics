@@ -25,6 +25,13 @@
 # MAGIC   (a 5km route's ratio doesn't get equal weight to a 500km route's).
 # MAGIC - Everything else that's a genuine dollar/count total (Revenue, Expenditure, KM,
 # MAGIC   passengers, KM-loss reasons) is a plain `SUM` — those are unambiguous.
+# MAGIC - **`revenue_loss_due_to_km_loss` is split across the 5 non-operation reasons
+# MAGIC   (crew/breakdown/spares/accident/other) in proportion to each reason's share of
+# MAGIC   `total_km_loss`.** The source data only reports one total revenue-loss figure per
+# MAGIC   row, not a per-reason breakdown — so `revenue_loss_want_of_crew`, etc. are an
+# MAGIC   *allocation*, not a figure the corporations directly reported. Confirmed with
+# MAGIC   project owner (2026-07-19) as an acceptable, clearly-labeled estimate for
+# MAGIC   dashboard use. NULL when a group has zero `total_km_loss` (nothing to allocate).
 
 # COMMAND ----------
 
@@ -124,10 +131,22 @@ def common_agg_exprs():
     return exprs
 
 
+# Maps each non-operation reason's KM-loss column to the revenue-loss column it
+# allocates into. Reason column values are already 0-filled in Silver (never NULL),
+# so only the total_km_loss == 0 case needs guarding against divide-by-zero.
+REVENUE_LOSS_ALLOCATION = {
+    "km_loss_want_of_crew": "revenue_loss_want_of_crew",
+    "km_loss_breakdown": "revenue_loss_breakdown",
+    "km_loss_want_of_spares": "revenue_loss_want_of_spares",
+    "km_loss_accident": "revenue_loss_accident",
+    "km_loss_others": "revenue_loss_others",
+}
+
+
 def add_derived_kpis(df):
     """Post-aggregation ratios computed from already-summed additive totals — safe,
     unlike averaging pre-computed per-row ratios."""
-    return (
+    df = (
         df.withColumn(
             "net_profit_margin_pct",
             F.when(F.col("total_revenue") == 0, None).otherwise(
@@ -147,6 +166,14 @@ def add_derived_kpis(df):
             ),
         )
     )
+    for km_loss_col, revenue_loss_col in REVENUE_LOSS_ALLOCATION.items():
+        df = df.withColumn(
+            revenue_loss_col,
+            F.when(F.col("total_km_loss") == 0, None).otherwise(
+                F.col("revenue_loss_due_to_km_loss") * F.col(km_loss_col) / F.col("total_km_loss")
+            ),
+        )
+    return df
 
 # COMMAND ----------
 
@@ -235,6 +262,28 @@ corporation_total_revenue = spark.table(corporation_table).agg(F.sum("total_reve
 assert abs(silver_total_revenue - route_total_revenue) < 1, "route_performance total_revenue doesn't reconcile with Silver"
 assert abs(silver_total_revenue - corporation_total_revenue) < 1, "corporation_performance total_revenue doesn't reconcile with Silver"
 print(f"Total revenue reconciles across Silver/Gold: {silver_total_revenue:,.2f}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC The 5 `revenue_loss_*` allocation columns must sum back to
+# MAGIC `revenue_loss_due_to_km_loss` for every row (proportional split, so nothing should
+# MAGIC be gained or lost in the allocation).
+
+# COMMAND ----------
+
+from functools import reduce
+import operator
+
+allocation_check = spark.table(corporation_table).withColumn(
+    "allocated_sum",
+    reduce(operator.add, (F.coalesce(F.col(c), F.lit(0.0)) for c in REVENUE_LOSS_ALLOCATION.values())),
+).withColumn(
+    "diff", F.abs(F.col("allocated_sum") - F.coalesce(F.col("revenue_loss_due_to_km_loss"), F.lit(0.0)))
+)
+max_diff = allocation_check.agg(F.max("diff")).first()[0]
+assert max_diff < 1, f"revenue_loss_* allocation doesn't reconcile with revenue_loss_due_to_km_loss (max diff {max_diff})"
+print(f"revenue_loss_* allocation reconciles per corporation (max diff: {max_diff:,.4f})")
 
 # COMMAND ----------
 
