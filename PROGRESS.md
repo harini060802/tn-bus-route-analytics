@@ -39,10 +39,13 @@ User Guide, and Final Deck are **not started**.
    KM-weighted averages of the corporations' own reported ratios; Revenue/Expenditure/KM
    figures are plain sums. Also derives `revenue_loss_want_of_crew` /
    `_breakdown` / `_want_of_spares` / `_accident` / `_others` by allocating the single
-   `revenue_loss_due_to_km_loss` total proportionally by each reason's share of
-   `total_km_loss` (confirmed with project owner 2026-07-19 — an estimate, not a
-   corporation-reported figure). Validation cells reconcile row counts, `total_revenue`,
-   and the revenue-loss allocation back to Silver/itself.
+   `revenue_loss_due_to_km_loss` total proportionally by each reason's share of the
+   **sum of the 5 reason columns themselves** — NOT `total_km_loss` (see Gotchas below)
+   — confirmed with project owner 2026-07-19 as an acceptable estimate, not a
+   corporation-reported figure. `NULL` for SALEM/SETC/TIRUNELVELI/KUMBAKONAM, which
+   never populate the 5 reason columns. Validation cells reconcile row counts,
+   `total_revenue`, and the revenue-loss allocation (wherever tracked) back to
+   Silver/itself.
 
 All three notebooks use `dbutils.widgets` for catalog/schema names (defaults:
 `workspace` catalog, `bronze`/`silver`/`gold` schemas) — override via widgets if your
@@ -60,6 +63,17 @@ workspace uses different names.
   independently be either word — fixed with `.isin(["ADDL", "ADDITIONAL"])` per column.
   See commit `2063243`. **If a future DQ count check fails, suspect a similar
   "columns don't hold the exact same string" issue before assuming the logic is wrong.**
+- **`revenue_loss_*` allocation reconciliation `AssertionError` (max diff ~258M)**:
+  first version divided each reason's revenue-loss allocation by `total_km_loss`.
+  That only works if the 5 reason columns (`km_loss_want_of_crew`, etc.) sum to
+  `total_km_loss` — they don't, because 4 of 8 corporations
+  (SALEM/SETC/TIRUNELVELI/KUMBAKONAM) never populate those 5 columns at all (§3.2),
+  so their 0-filled sum is 0 while `total_km_loss` is still real and large for them.
+  Fixed by normalizing against the SUM of the 5 reason columns instead, with `NULL`
+  output (not a wrong number) when that sum is 0. **Any "proportional allocation of
+  total X across sub-columns" logic must normalize by the sum of those same
+  sub-columns, never by a separately-reported total — the two are not guaranteed to
+  match, especially where source columns are known to be sparsely populated.**
 
 ## Next session: pick up here
 

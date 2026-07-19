@@ -269,15 +269,29 @@ columns into groups:
    row — it doesn't say how much of that loss is attributable to crew shortage
    versus breakdown versus spares versus accident versus other reasons. To support
    a reason-by-reason breakdown on the dashboard, Gold **allocates** that total
-   proportionally, based on each reason's share of the kilometres lost (e.g., if
-   "breakdown" caused 30% of the lost kilometres for a route, 30% of that route's
+   proportionally, based on each reason's share *among the 5 reason columns
+   themselves* (e.g., if "breakdown" accounts for 30% of the combined
+   crew/breakdown/spares/accident/other total for a route, 30% of that route's
    revenue loss is attributed to breakdown). This produces five new columns —
    `revenue_loss_want_of_crew`, `revenue_loss_breakdown`,
    `revenue_loss_want_of_spares`, `revenue_loss_accident`, `revenue_loss_others` —
    and a validation check confirms the five always add back up to the original
-   total. **This is an estimate, not a figure the corporations directly
+   total, wherever an allocation was actually possible.
+
+   Note this is deliberately normalized against the 5 reason columns' own combined
+   total, not against the separately-reported "Total KM Loss" figure — an earlier
+   version of this logic used "Total KM Loss" as the divisor and produced badly
+   wrong numbers, because 4 of the 8 corporations (SALEM, SETC, TIRUNELVELI,
+   KUMBAKONAM) essentially never fill in the 5 reason columns at all (Section 4.4
+   above), while still reporting a real, non-zero "Total KM Loss." Dividing by that
+   figure allocated almost nothing to any reason for those corporations, while the
+   real total stayed large — the parts silently didn't add up to the whole. For
+   those same 4 corporations, all five `revenue_loss_*` columns are `NULL` rather
+   than a wrong number — there's genuinely no reason breakdown reported for them to
+   allocate from, consistent with how `reason_tracked` already handles this same
+   gap elsewhere. **This is an estimate, not a figure the corporations directly
    reported** — it's a reasonable, transparent way to split a number that was only
-   ever given in total.
+   ever given in total, wherever a reason breakdown exists to split it by.
 
 ### 5.2 `gold.route_performance` — one row per route
 Grouped by corporation + route number (all the individual scheduled services on a

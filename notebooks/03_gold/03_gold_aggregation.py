@@ -27,11 +27,19 @@
 # MAGIC   passengers, KM-loss reasons) is a plain `SUM` — those are unambiguous.
 # MAGIC - **`revenue_loss_due_to_km_loss` is split across the 5 non-operation reasons
 # MAGIC   (crew/breakdown/spares/accident/other) in proportion to each reason's share of
-# MAGIC   `total_km_loss`.** The source data only reports one total revenue-loss figure per
-# MAGIC   row, not a per-reason breakdown — so `revenue_loss_want_of_crew`, etc. are an
+# MAGIC   the SUM of those 5 reason columns** (not `total_km_loss` — see note below).
+# MAGIC   The source data only reports one total revenue-loss figure per row, not a
+# MAGIC   per-reason breakdown — so `revenue_loss_want_of_crew`, etc. are an
 # MAGIC   *allocation*, not a figure the corporations directly reported. Confirmed with
 # MAGIC   project owner (2026-07-19) as an acceptable, clearly-labeled estimate for
-# MAGIC   dashboard use. NULL when a group has zero `total_km_loss` (nothing to allocate).
+# MAGIC   dashboard use. NULL when the 5 reason columns sum to zero for a group — this
+# MAGIC   is the normal case for SALEM/SETC/TIRUNELVELI/KUMBAKONAM, which essentially
+# MAGIC   never populate these columns (`CLAUDE.md` §3.2). An earlier version of this
+# MAGIC   allocation divided by `total_km_loss` instead, which is a separately-reported
+# MAGIC   figure that does **not** equal the sum of the 5 reason columns for those
+# MAGIC   corporations — that mismatch silently allocated ~0 revenue loss to every
+# MAGIC   reason while `total_km_loss` stayed large, so the parts never reconciled to
+# MAGIC   the whole. Normalizing by the reason columns' own sum fixes that.
 
 # COMMAND ----------
 
@@ -55,6 +63,9 @@ print(f"Writing to: {corporation_table}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{gold_schema}")
 
 # COMMAND ----------
+
+import operator
+from functools import reduce
 
 from pyspark.sql import functions as F
 
@@ -132,8 +143,16 @@ def common_agg_exprs():
 
 
 # Maps each non-operation reason's KM-loss column to the revenue-loss column it
-# allocates into. Reason column values are already 0-filled in Silver (never NULL),
-# so only the total_km_loss == 0 case needs guarding against divide-by-zero.
+# allocates into. Normalized by the SUM of these 5 columns (not total_km_loss) —
+# 4 of 8 corporations (SALEM/SETC/TIRUNELVELI/KUMBAKONAM, CLAUDE.md §3.2) never
+# populate these columns at all, so their 0-filled sum is 0 while total_km_loss is
+# still a real, separately-reported number for them. Dividing by total_km_loss would
+# silently allocate ~0 revenue loss to every reason for those corporations while the
+# real total_km_loss/revenue_loss_due_to_km_loss stays large — parts wouldn't
+# reconcile to the whole. Normalizing by the reason columns' own sum guarantees the
+# parts always add back to the total whenever there's anything to allocate; where
+# nothing is tracked (sum == 0), the result is NULL — we genuinely don't have a basis
+# to split that corporation's loss by reason, same spirit as the `reason_tracked` flag.
 REVENUE_LOSS_ALLOCATION = {
     "km_loss_want_of_crew": "revenue_loss_want_of_crew",
     "km_loss_breakdown": "revenue_loss_breakdown",
@@ -166,11 +185,12 @@ def add_derived_kpis(df):
             ),
         )
     )
+    reason_total = reduce(operator.add, (F.col(c) for c in REVENUE_LOSS_ALLOCATION.keys()))
     for km_loss_col, revenue_loss_col in REVENUE_LOSS_ALLOCATION.items():
         df = df.withColumn(
             revenue_loss_col,
-            F.when(F.col("total_km_loss") == 0, None).otherwise(
-                F.col("revenue_loss_due_to_km_loss") * F.col(km_loss_col) / F.col("total_km_loss")
+            F.when(reason_total == 0, None).otherwise(
+                F.col("revenue_loss_due_to_km_loss") * F.col(km_loss_col) / reason_total
             ),
         )
     return df
@@ -267,23 +287,28 @@ print(f"Total revenue reconciles across Silver/Gold: {silver_total_revenue:,.2f}
 
 # MAGIC %md
 # MAGIC The 5 `revenue_loss_*` allocation columns must sum back to
-# MAGIC `revenue_loss_due_to_km_loss` for every row (proportional split, so nothing should
-# MAGIC be gained or lost in the allocation).
+# MAGIC `revenue_loss_due_to_km_loss` **wherever an allocation was actually made**
+# MAGIC (i.e. the 5 reason columns aren't all zero). Where a corporation never tracks
+# MAGIC these reasons at all (SALEM/SETC/TIRUNELVELI/KUMBAKONAM per `CLAUDE.md` §3.2),
+# MAGIC `revenue_loss_*` is NULL by design — there's no basis to split that corporation's
+# MAGIC loss by reason, so those rows are excluded from this check rather than forced to
+# MAGIC reconcile against a number they were never allocated from.
 
 # COMMAND ----------
 
-from functools import reduce
-import operator
-
-allocation_check = spark.table(corporation_table).withColumn(
-    "allocated_sum",
-    reduce(operator.add, (F.coalesce(F.col(c), F.lit(0.0)) for c in REVENUE_LOSS_ALLOCATION.values())),
-).withColumn(
-    "diff", F.abs(F.col("allocated_sum") - F.coalesce(F.col("revenue_loss_due_to_km_loss"), F.lit(0.0)))
+reason_total_col = reduce(operator.add, (F.col(c) for c in REVENUE_LOSS_ALLOCATION.keys()))
+allocation_check = (
+    spark.table(corporation_table)
+    .withColumn(
+        "allocated_sum",
+        reduce(operator.add, (F.coalesce(F.col(c), F.lit(0.0)) for c in REVENUE_LOSS_ALLOCATION.values())),
+    )
+    .withColumn("diff", F.abs(F.col("allocated_sum") - F.coalesce(F.col("revenue_loss_due_to_km_loss"), F.lit(0.0))))
+    .filter(reason_total_col > 0)
 )
 max_diff = allocation_check.agg(F.max("diff")).first()[0]
-assert max_diff < 1, f"revenue_loss_* allocation doesn't reconcile with revenue_loss_due_to_km_loss (max diff {max_diff})"
-print(f"revenue_loss_* allocation reconciles per corporation (max diff: {max_diff:,.4f})")
+assert max_diff is None or max_diff < 1, f"revenue_loss_* allocation doesn't reconcile with revenue_loss_due_to_km_loss (max diff {max_diff})"
+print(f"revenue_loss_* allocation reconciles wherever tracked (max diff: {max_diff:,.4f})" if max_diff is not None else "No corporations had a tracked reason breakdown to check.")
 
 # COMMAND ----------
 
