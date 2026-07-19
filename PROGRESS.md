@@ -16,9 +16,10 @@ state and the "gotchas" hit along the way.
 | 6. Power BI connection via SQL Warehouse | **Not started** |
 | 7. Dashboard page design | **Not started** |
 
-The 6 manager-facing deliverables (`CLAUDE.md` §6, tracked in `docs/`) are also **not
-started** — none of Charter, PDD, DQ Report, Executive Summary, Dashboard User Guide, or
-Final Deck exist yet.
+Of the 6 manager-facing deliverables (`CLAUDE.md` §6, tracked in `docs/`):
+`docs/project_understanding_doc.md` (plain-language walkthrough of Bronze/Silver/Gold)
+and `docs/Data_Quality_Report.md` are done. Charter, PDD, Executive Summary, Dashboard
+User Guide, and Final Deck are **not started**.
 
 ## What each notebook does (run in this order in Databricks)
 
